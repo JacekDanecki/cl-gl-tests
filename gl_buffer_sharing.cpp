@@ -37,7 +37,7 @@ EGLContext eglContext;
 EGLSurface eglSurface;
 Display* xDisplay;
 Window xWindow;
-cl_mem buf[16] = {};
+cl_mem buf = {};
 size_t globals[3];
 size_t locals[3];
 cl_kernel kernel = NULL;
@@ -57,7 +57,6 @@ fill_gl_image(write_only image2d_t img) \
   int lgid_y = get_group_id(1);\
   int num_groups_x = get_num_groups(0);\
   int num_groups_y = get_num_groups(1);\
-\
   coord.x = get_global_id(0);\
   coord.y = get_global_id(1);\
   color_v4 = (float4)( lgid_x/(float)num_groups_x, lgid_y/(float)num_groups_y, 1.0, 1.0);\
@@ -68,7 +67,7 @@ fill_gl_image(write_only image2d_t img) \
 void draw()
 {
     XEvent event;
-
+    int shown = 0;
     float vertices[8] = {-1, 1, 1, 1, 1, -1, -1, -1};
     float tex_coords[8] = {0, 0, 1, 0, 1, 1, 0, 1};
 
@@ -76,21 +75,48 @@ void draw()
     {
         XNextEvent(xDisplay, &event);
 
-        if (event.type == Expose)
+        if (event.type == Expose && !shown)
         {
+            unsigned int tex_data[w * h];
+            unsigned int ptr[w * h];
+            memset(tex_data, 0, w * h * 4);
+            memset(ptr, 0, w * h * 4);
+
             glClearColor(0.0, 1.0, 1.0, 1.0);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf[0]);
+            clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf);
             globals[0] = w;
             globals[1] = h;
             locals[0] = 16;
             locals[1] = 16;
             glFinish();
-            clEnqueueAcquireGLObjects(queue, 1, &buf[0], 0, 0, 0);
+            clEnqueueAcquireGLObjects(queue, 1, &buf, 0, 0, 0);
             clEnqueueNDRangeKernel(queue, kernel, 2, NULL, globals, locals, 0, NULL, NULL);
-            clEnqueueReleaseGLObjects(queue, 1, &buf[0], 0, 0, 0);
+
+            size_t origin[3] = {0, 0, 0};
+            size_t region[3] = {10, 2, 1};
+            clEnqueueReadImage(queue, buf, CL_TRUE, origin, region, 1024, 0, ptr, 0, NULL, NULL);
+            clEnqueueReleaseGLObjects(queue, 1, &buf, 0, 0, 0);
             clFinish(queue);
+
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, tex_data);
+            printf("data[0]: %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x\n", tex_data[0], tex_data[1], tex_data[2], tex_data[3], tex_data[4],
+                   tex_data[5], tex_data[6], tex_data[7], tex_data[8], tex_data[9], tex_data[10], tex_data[11], tex_data[12], tex_data[13], tex_data[14],
+                   tex_data[15], tex_data[16], tex_data[17], tex_data[18], tex_data[19]);
+
+            /*printf("float[0]: %f %f %f %f\n",
+             *((float*)(&ptr[0])),
+             *((float*)(&ptr[1])),
+             *((float*)(&ptr[2])),
+             *((float*)(&ptr[3])));
+             */
+            printf("data[1]: %x %x %x %x %x %x %x %x %x %x\n", tex_data[w], tex_data[w + 1], tex_data[w + 2], tex_data[w + 3], tex_data[w + 4], tex_data[w + 5],
+                   tex_data[w + 6], tex_data[w + 7], tex_data[w + 8], tex_data[w + 9]);
+
+            printf("ptr[0]: %x %x %x %x %x %x %x %x %x %x\n", ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7], ptr[8], ptr[9]);
+            printf("ptr[1]: %x %x %x %x %x %x %x %x %x %x\n", ptr[w], ptr[w + 1], ptr[w + 2], ptr[w + 3], ptr[w + 4], ptr[w + 5], ptr[w + 6], ptr[w + 7],
+                   ptr[w + 8], ptr[w + 9]);
 
             glBindTexture(GL_TEXTURE_2D, tex);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -107,6 +133,7 @@ void draw()
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
             glFinish();
             eglSwapBuffers(eglDisplay, eglSurface);
+            shown++;
         }
         if (event.type == KeyPress) break;
     }
@@ -246,6 +273,13 @@ error:
 
 int main(int argc, char* argv[])
 {
+    unsigned int init_data[w * h];
+    for (int i = 0; i < 128; i++) init_data[i] = 0x11223344;
+    for (int i = 0; i < 128; i++) init_data[256 + i] = 0x55667788;
+
+    unsigned int tex_data[w * h];
+    memset(tex_data, 0, w * h * 4);
+
     cl_int status = CL_SUCCESS;
     if (cl_ocl_init() != CL_SUCCESS) exit(1);
 
@@ -255,12 +289,99 @@ int main(int argc, char* argv[])
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, init_data);
+    printf("init_data[0]: %x %x %x %x %x\n", init_data[0], init_data[1], init_data[2], init_data[3], init_data[4]);
+    printf("init_data[1]: %x %x %x %x %x\n", init_data[w], init_data[w + 1], init_data[w + 2], init_data[w + 3], init_data[w + 4]);
 
-    buf[0] = clCreateFromGLTexture(ctx, 0, GL_TEXTURE_2D, 0, tex, &status);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, tex_data);
+    printf("tex_data[0]: %x %x %x %x %x\n", tex_data[0], tex_data[1], tex_data[2], tex_data[3], tex_data[4]);
+    printf("tex_data[1]: %x %x %x %x %x\n", tex_data[w], tex_data[w + 1], tex_data[w + 2], tex_data[w + 3], tex_data[w + 4]);
 
+    unsigned int target = GL_TEXTURE_2D;
+    int miplevel = 0;
+    GLint param_value;
+    glGetTexLevelParameteriv(target, miplevel, GL_TEXTURE_WIDTH, &param_value);
+    printf("width = %d\n", param_value);
+    glGetTexLevelParameteriv(target, miplevel, GL_TEXTURE_HEIGHT, &param_value);
+    printf("height= %d\n", param_value);
+    glGetTexLevelParameteriv(target, miplevel, GL_TEXTURE_DEPTH, &param_value);
+    printf("depth = %d\n", param_value);
+    glGetTexLevelParameteriv(target, miplevel, GL_TEXTURE_INTERNAL_FORMAT, &param_value);
+    printf("gl_format = %x\n", param_value);
+    //#define GL_RGBA					0x1908
+    // cl_format->image_channel_order = CL_RGBA;
+    // cl_format->image_channel_data_type = CL_UNORM_INT8;
+    // case GL_TEXTURE_2D: *type = CL_MEM_OBJECT_IMAGE2D; break;
+
+    // uint32_t tiling_mode, swizzle_mode;
+    // drm_intel_bo_get_tiling(intel_bo, &tiling_mode, &swizzle_mode);
+
+    buf = clCreateFromGLTexture(ctx, 0, GL_TEXTURE_2D, 0, tex, &status);
+
+    // image type                     size of buffer
+    // CL_MEM_OBJECT_IMAGE2D >= image_row_pitch * image_height
+
+    size_t value;
+    unsigned int value1;
+
+    clGetImageInfo(buf, CL_IMAGE_WIDTH, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_WIDTH=%lu\n", value);
+
+    clGetImageInfo(buf, CL_IMAGE_HEIGHT, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_HEIGHT=%lu\n", value);
+
+    clGetImageInfo(buf, CL_IMAGE_DEPTH, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_DEPTH=%lu\n", value);
+
+    clGetImageInfo(buf, CL_IMAGE_ARRAY_SIZE, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_ARRAY_SIZE=%lu\n", value);
+
+    clGetImageInfo(buf, CL_IMAGE_NUM_MIP_LEVELS, sizeof(cl_uint), &value1, NULL);
+    printf("CL_IMAGE_NUM_MIP_LEVELS=%u\n", value1);
+
+    clGetImageInfo(buf, CL_IMAGE_NUM_SAMPLES, sizeof(cl_uint), &value1, NULL);
+    printf("CL_IMAGE_NUM_SAMPLES=%u\n", value1);
+
+    clGetImageInfo(buf, CL_IMAGE_ELEMENT_SIZE, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_ELEMENT_SIZE=%lu\n", value);
+
+    clGetImageInfo(buf, CL_IMAGE_ROW_PITCH, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_ROW_PITCH=%lu\n", value);
+
+    clGetImageInfo(buf, CL_IMAGE_SLICE_PITCH, sizeof(size_t), &value, NULL);
+    printf("CL_IMAGE_SLICE_PITCH=%lu\n", value);
+
+    cl_image_format format;
+    clGetImageInfo(buf, CL_IMAGE_FORMAT, sizeof(cl_image_format), &format, NULL);
+    printf("channel_order==%x channel_data_type=%x\n", format.image_channel_order, format.image_channel_data_type);
+    //#define CL_RGBA                                     0x10B5
+    //#define CL_UNORM_INT8                               0x10D2
+
+#if 0
+//clGetGLObjectInfo and clGetGLTextureInfo crashes on Beignet, and works with Neo
+//
+    cl_gl_object_type objectType = 0u;
+    cl_GLuint objectId = 0u;
+    clGetGLObjectInfo(buf, &objectType, &objectId);
+
+    printf("objectType=%x tex=%x id=%x\n", objectType, tex, objectId);
+//#define CL_GL_OBJECT_TEXTURE2D                  0x2001
+
+    GLenum textureTarget = 0u;
+    size_t retSize = 0;
+    GLint mipLevel = 0u;
+
+    clGetGLTextureInfo(buf, CL_GL_TEXTURE_TARGET, sizeof(GLenum), &textureTarget, &retSize);
+    printf("textureTarget=%x\n", textureTarget);
+//#define GL_TEXTURE_2D				0x0DE1
+    printf("sizeof(GLenum)=%lu retSize=%lu\n", sizeof(GLenum), retSize);
+
+    clGetGLTextureInfo(buf, CL_GL_MIPMAP_LEVEL, sizeof(GLenum), &mipLevel, &retSize);
+    printf("mipLevel=%d sizeof(GLenum)=%lu retSize=%lu\n", mipLevel, sizeof(GLenum), retSize);
+#endif
     draw();
 
+    clReleaseMemObject(buf);
     clReleaseKernel(kernel);
     clReleaseProgram(program);
     clReleaseCommandQueue(queue);

@@ -95,7 +95,7 @@ int main()
     int fd, stride, offset;
     int miplevel = 0;
     EGLenum e_target = EGL_GL_TEXTURE_2D;
-    unsigned int* data = malloc(w * h * 4);
+    unsigned int data[w * h];
     for (int i = 0; i < 0xffff; i++) data[i] = 0x4488bbff;
 
     GLuint tex;
