@@ -29,8 +29,8 @@
 #include <CL/cl_gl.h>
 #include <unistd.h>
 
-const size_t w = 256;
-const size_t h = 256;
+const size_t w = 512;
+const size_t h = 512;
 GLuint tex;
 EGLDisplay eglDisplay;
 EGLContext eglContext;
@@ -38,8 +38,6 @@ EGLSurface eglSurface;
 Display* xDisplay;
 Window xWindow;
 cl_mem buf = {};
-size_t globals[3];
-size_t locals[3];
 cl_kernel kernel = NULL;
 cl_command_queue queue = NULL;
 cl_platform_id platform = NULL;
@@ -55,11 +53,11 @@ fill_gl_image(write_only image2d_t img) \
   float4 color_v4;\
   int lgid_x = get_group_id(0);\
   int lgid_y = get_group_id(1);\
-  int num_groups_x = get_num_groups(0);\
-  int num_groups_y = get_num_groups(1);\
+  int work_size_x = get_global_size(0);\
+  int work_size_y = get_global_size(1);\
   coord.x = get_global_id(0);\
   coord.y = get_global_id(1);\
-  color_v4 = (float4)( lgid_x/(float)num_groups_x, lgid_y/(float)num_groups_y, 1.0, 1.0);\
+  color_v4 = (float4)( coord.x/(float)work_size_x, coord.y/(float)work_size_y, 1.0, 1.0);\
   write_imagef(img, coord, color_v4);\
 }\
 ";
@@ -67,7 +65,6 @@ fill_gl_image(write_only image2d_t img) \
 void draw()
 {
     XEvent event;
-    int shown = 0;
     float vertices[8] = {-1, 1, 1, 1, 1, -1, -1, -1};
     float tex_coords[8] = {0, 0, 1, 0, 1, 1, 0, 1};
 
@@ -75,8 +72,9 @@ void draw()
     {
         XNextEvent(xDisplay, &event);
 
-        if (event.type == Expose && !shown)
+        if (event.type == Expose)
         {
+            size_t globals[3];
             unsigned int tex_data[w * h];
             unsigned int ptr[w * h];
             memset(tex_data, 0, w * h * 4);
@@ -88,11 +86,9 @@ void draw()
             clSetKernelArg(kernel, 0, sizeof(cl_mem), &buf);
             globals[0] = w;
             globals[1] = h;
-            locals[0] = 16;
-            locals[1] = 16;
             glFinish();
             clEnqueueAcquireGLObjects(queue, 1, &buf, 0, 0, 0);
-            clEnqueueNDRangeKernel(queue, kernel, 2, NULL, globals, locals, 0, NULL, NULL);
+            clEnqueueNDRangeKernel(queue, kernel, 2, NULL, globals, NULL, 0, NULL, NULL);
 
             size_t origin[3] = {0, 0, 0};
             size_t region[3] = {10, 2, 1};
@@ -105,12 +101,6 @@ void draw()
                    tex_data[5], tex_data[6], tex_data[7], tex_data[8], tex_data[9], tex_data[10], tex_data[11], tex_data[12], tex_data[13], tex_data[14],
                    tex_data[15], tex_data[16], tex_data[17], tex_data[18], tex_data[19]);
 
-            /*printf("float[0]: %f %f %f %f\n",
-             *((float*)(&ptr[0])),
-             *((float*)(&ptr[1])),
-             *((float*)(&ptr[2])),
-             *((float*)(&ptr[3])));
-             */
             printf("data[1]: %x %x %x %x %x %x %x %x %x %x\n", tex_data[w], tex_data[w + 1], tex_data[w + 2], tex_data[w + 3], tex_data[w + 4], tex_data[w + 5],
                    tex_data[w + 6], tex_data[w + 7], tex_data[w + 8], tex_data[w + 9]);
 
@@ -133,9 +123,12 @@ void draw()
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
             glFinish();
             eglSwapBuffers(eglDisplay, eglSurface);
-            shown++;
         }
-        if (event.type == KeyPress) break;
+        if (event.type == KeyPress)
+            ;
+        {
+            if (event.xkey.keycode == 9) break;
+        }
     }
 }
 
@@ -274,8 +267,9 @@ error:
 int main(int argc, char* argv[])
 {
     unsigned int init_data[w * h];
-    for (int i = 0; i < 128; i++) init_data[i] = 0x11223344;
-    for (int i = 0; i < 128; i++) init_data[256 + i] = 0x55667788;
+    int s = w * h / 2;
+    for (int i = 0; i < s; i++) init_data[i] = 0x4488bbff;
+    for (int i = 0; i < s; i++) init_data[s + i] = 0xffffffff;
 
     unsigned int tex_data[w * h];
     memset(tex_data, 0, w * h * 4);
@@ -308,18 +302,8 @@ int main(int argc, char* argv[])
     printf("depth = %d\n", param_value);
     glGetTexLevelParameteriv(target, miplevel, GL_TEXTURE_INTERNAL_FORMAT, &param_value);
     printf("gl_format = %x\n", param_value);
-    //#define GL_RGBA					0x1908
-    // cl_format->image_channel_order = CL_RGBA;
-    // cl_format->image_channel_data_type = CL_UNORM_INT8;
-    // case GL_TEXTURE_2D: *type = CL_MEM_OBJECT_IMAGE2D; break;
-
-    // uint32_t tiling_mode, swizzle_mode;
-    // drm_intel_bo_get_tiling(intel_bo, &tiling_mode, &swizzle_mode);
 
     buf = clCreateFromGLTexture(ctx, 0, GL_TEXTURE_2D, 0, tex, &status);
-
-    // image type                     size of buffer
-    // CL_MEM_OBJECT_IMAGE2D >= image_row_pitch * image_height
 
     size_t value;
     unsigned int value1;
@@ -354,8 +338,6 @@ int main(int argc, char* argv[])
     cl_image_format format;
     clGetImageInfo(buf, CL_IMAGE_FORMAT, sizeof(cl_image_format), &format, NULL);
     printf("channel_order==%x channel_data_type=%x\n", format.image_channel_order, format.image_channel_data_type);
-    //#define CL_RGBA                                     0x10B5
-    //#define CL_UNORM_INT8                               0x10D2
 
 #if 0
 //clGetGLObjectInfo and clGetGLTextureInfo crashes on Beignet, and works with Neo
@@ -365,7 +347,6 @@ int main(int argc, char* argv[])
     clGetGLObjectInfo(buf, &objectType, &objectId);
 
     printf("objectType=%x tex=%x id=%x\n", objectType, tex, objectId);
-//#define CL_GL_OBJECT_TEXTURE2D                  0x2001
 
     GLenum textureTarget = 0u;
     size_t retSize = 0;
@@ -373,7 +354,6 @@ int main(int argc, char* argv[])
 
     clGetGLTextureInfo(buf, CL_GL_TEXTURE_TARGET, sizeof(GLenum), &textureTarget, &retSize);
     printf("textureTarget=%x\n", textureTarget);
-//#define GL_TEXTURE_2D				0x0DE1
     printf("sizeof(GLenum)=%lu retSize=%lu\n", sizeof(GLenum), retSize);
 
     clGetGLTextureInfo(buf, CL_GL_MIPMAP_LEVEL, sizeof(GLenum), &mipLevel, &retSize);
